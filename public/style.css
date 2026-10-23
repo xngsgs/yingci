@@ -277,4 +277,3 @@ h1{font-size:22px}
 .mobile-projects{display:none}
 @media(max-width:900px){.mobile-projects{display:inline-flex}
 }
-
