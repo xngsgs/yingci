@@ -1,4 +1,8 @@
 const paths = {
+  upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
+  compass: '<circle cx="12" cy="12" r="9"/><path d="m16 8-2.5 5.5L8 16l2.5-5.5z"/>',
+  compare: '<path d="M10 3v18M3 7h4m-4 5h4m-4 5h4M14 7h7m-7 5h7m-7 5h7"/>',
+  undo: '<path d="M4 10h10a6 6 0 0 1 0 12M4 10l6-6M4 10l6 6"/>',
   plus: '<path d="M12 5v14M5 12h14"/>',
   settings: '<path d="m9.5 3-.6 2.3-2 .9-2.2-.7-2.4 4.1 1.7 1.7v2.3l-1.7 1.7 2.4 4.1 2.2-.7 2 .9.6 2.3h5l.6-2.3 2-.9 2.2.7 2.4-4.1-1.7-1.7v-2.3l1.7-1.7-2.4-4.1-2.2.7-2-.9-.6-2.3z"/><circle cx="12" cy="12" r="3"/>',
   image: '<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="m21 15-5-5L5 21"/>',

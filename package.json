@@ -1,6 +1,6 @@
 {
   "name": "yingci",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "映词：用参考图和自然对话，一起完善生图提示词。",
   "type": "module",
   "private": true,

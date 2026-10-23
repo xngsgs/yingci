@@ -1,15 +1,16 @@
-import { FIELD_DEFS, FIELD_KEYS, composePrompt, describeChanges } from './shared.mjs';
+import { FIELD_DEFS, FIELD_KEYS, describeChanges } from './shared.mjs';
 import { hydrateIcons, icon } from './icons.mjs';
 import { saveProject, listProjects, loadProject, deleteProject } from './storage.mjs';
 import { DEMO_DRAFT, DEMO_CHOICES, DEMO_REPLY, DEMO_OBSERVATIONS, demoResult } from './demo.mjs';
+import { DEFAULT_BRIEF, PURPOSES, REFERENCE_MODES, normalizeBrief, formattedPrompt, draftChanges, inspectDraft, paletteFromPixels } from './studio.mjs';
 
 const $ = id => document.getElementById(id);
 const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
-let project, config = { configured: false }, language = 'zh', busy = false, controller, editKey, toastTimer, saveQueue = Promise.resolve();
+let project, config = { configured: false }, language = 'zh', promptView = 'preview', busy = false, controller, editKey, toastTimer, saveQueue = Promise.resolve();
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
 function showDialog(id) { if (!$(id).open) $(id).showModal(); }
 function currentDraft() { return project.revisions.at(-1)?.draft || null; }
-function blankProject() { return { id: crypto.randomUUID(), title: '新的画面', mode: 'live', created: Date.now(), updated: Date.now(), reference: null, scope: ['composition','lighting','palette','style'], locks: [], messages: [], revisions: [], observations: [] }; }
+function blankProject() { return { id: crypto.randomUUID(), title: '新的画面', mode: 'live', created: Date.now(), updated: Date.now(), reference: null, scope: ['composition','lighting','palette','style'], locks: [], messages: [], revisions: [], observations: [], brief:structuredClone(DEFAULT_BRIEF) }; }
 function rememberId() { try { localStorage.setItem('yingci-last-project', project.id); } catch { /* Project files remain the primary store. */ } }
 function persist() {
   project.updated = Date.now(); const snapshot = structuredClone(project); rememberId();
@@ -34,12 +35,17 @@ function renderBusy() {
   $('messages').setAttribute('aria-busy', String(busy));
   $('aspect-ratio').disabled = busy;
   $('open-versions').disabled = busy || !project?.revisions.length;
+  for (const id of ['edit-brief','output-target','undo-latest','compare-versions','rename-project']) $(id).disabled = busy;
+  if(project) { $('undo-latest').disabled=busy||project.revisions.length<2; $('compare-versions').disabled=busy||project.revisions.length<2; }
+  document.querySelectorAll('.lock-button,.field-text,.scope-option,.quick-action').forEach(button=>button.disabled=busy);
+  for(const id of ['edit-avoid','attach-top','replace-reference','remove-reference','backup-project','import-project'])$(id).disabled=busy;
 }
 function renderMode() {
   const demo = project.mode === 'demo';
-  $('connection-label').textContent = config.configured ? '模型已连接' : '连接模型';
+  $('connection-label').textContent = config.configured ? '模型已配置' : '连接模型';
   $('open-settings').classList.toggle('configured', config.configured);
-  $('mode-description').textContent = demo ? '示例体验：使用预设对话演示流程，不调用 AI。' : config.configured ? '自由创作：发送时，参考图与对话将交给你连接的 AI 模型。' : '连接一个视觉模型，就能分析自己的参考图、自由对话。';
+  $('mode-badge').textContent = config.testMode ? '隔离联调' : demo ? '示例体验' : '自由创作';
+  $('mode-description').textContent = config.testMode ? '当前是模拟模型测试页，返回值用于验证功能，不代表真实 AI 效果。' : demo ? '预设对话，带你了解整个创作过程。不会调用模型。' : config.configured ? '参考图与对话仅在发送时交给你选择的模型。' : '连接视觉模型，就能开始自己的图片分析与自由对话。';
   $('banner-action').textContent = demo && config.configured ? '继续自由创作' : config.configured ? '查看连接' : '连接自己的模型';
   $('composer-mode').textContent = demo ? '预设示例' : config.configured ? '自由对话' : '等待连接模型';
   $('privacy-note').textContent = demo ? '示例无需联网调用模型' : '发送时会上传参考图至所连接模型';
@@ -47,8 +53,8 @@ function renderMode() {
 function renderReference() {
   const ref = project.reference;
   $('reference-preview').hidden = !ref; $('reference-caption').hidden = !ref; $('upload-empty').hidden = !!ref;
-  if (ref) { $('reference-image').src = ref.dataUrl || ref.assetPath; $('reference-image').alt = ref.name; $('reference-name').textContent = ref.name; }
-  else { $('reference-image').removeAttribute('src'); }
+  if (ref) { const source=ref.dataUrl||ref.assetPath; if($('reference-image').getAttribute('src')!==source)$('reference-image').src=source; $('reference-image').alt = ref.name; $('reference-name').textContent = ref.name; }
+  else { $('reference-image').removeAttribute('src'); $('palette-section').hidden=true; $('reference-size').textContent=''; }
   $('scope-options').replaceChildren(...FIELD_DEFS.map(field => {
     const button = el('button', 'scope-option'); button.type = 'button'; button.setAttribute('aria-pressed', String(project.scope.includes(field.key)));
     button.append(icon(project.scope.includes(field.key) ? 'check' : 'plus'), document.createTextNode(field.label));
@@ -80,6 +86,9 @@ function renderMessages(scroll = false) {
     if (message.role === 'assistant') { const image = el('img'); image.src = '/assets/mark.svg'; image.alt = ''; meta.append(image, document.createTextNode('映词')); if (message.demo) meta.append(el('span','','预设示例')); }
     else meta.append(document.createTextNode('你'));
     article.append(meta,el('div','message-copy',message.text));
+    if (message.understanding) article.insertBefore(el('div','understanding',message.understanding),article.lastChild);
+    if (message.assumptions?.length) { const details=el('details','assumptions'),list=el('ul');details.append(el('summary','',`我补充的建议（${message.assumptions.length}）`));message.assumptions.forEach(text=>list.append(el('li','',text)));details.append(list);article.append(details); }
+    if (message.changeLabels?.length) {const labels=el('div','change-labels');message.changeLabels.forEach(text=>labels.append(el('span','',text)));article.append(labels);}
     if (message.suggestions?.length && index === lastAssistant) {
       const suggestions = el('div','suggestions');
       message.suggestions.forEach(text => { const button = el('button','suggestion',text); button.append(icon('arrow-right')); button.disabled = busy; button.addEventListener('click', () => sendMessage(text)); suggestions.append(button); });
@@ -91,6 +100,9 @@ function renderMessages(scroll = false) {
     const loading = el('article','message assistant loading'); loading.append(el('div','message-copy loading-dots','正在整理你的画面')); container.append(loading);
   }
   if (scroll) requestAnimationFrame(() => container.scrollTop = container.scrollHeight);
+  const showQuick=lastAssistant<0 || !project.messages[lastAssistant].suggestions?.length;
+  $('quick-actions').hidden=!showQuick;
+  $('quick-actions').replaceChildren(...(project.mode==='demo'?DEMO_CHOICES:['更自然一些，保留现有主体','背景简洁一些，突出主体','你帮我决定一个合适的方向']).map(text=>{const button=el('button','quick-action',text);button.disabled=busy;button.addEventListener('click',()=>{$('message-input').value=text;$('message-input').focus();});return button;}));
 }
 function renderPrompt() {
   const draft = currentDraft(), revision = project.revisions.at(-1);
@@ -112,16 +124,27 @@ function renderPrompt() {
   $('avoid-text').textContent = draft.avoid[language] || '暂无额外限制';
   $('revision-note').textContent = revision.changes.join('；');
   document.querySelectorAll('[data-language]').forEach(button => button.setAttribute('aria-pressed',String(button.dataset.language === language)));
+  $('assembled-prompt').textContent=formattedPrompt(draft,language,project.brief.target);
+  $('output-target').value=project.brief.target;
+  $('output-caption').textContent=project.brief.target==='midjourney'?'已整理为 Midjourney 格式':'可以直接复制使用';
+  changePromptView(promptView);
+  $('locked-summary').replaceChildren(...project.locks.map(key=>{const button=el('button','locked-chip',`已锁定${FIELD_DEFS.find(f=>f.key===key).label}`);button.prepend(icon('lock'));button.disabled=busy;button.title='点击前往画面要素调整';button.addEventListener('click',()=>changePromptView('elements'));return button;}));
+  if(!project.locks.length){const hint=el('button','text-button','在画面要素中，锁定满意的部分');hint.addEventListener('click',()=>changePromptView('elements'));$('locked-summary').append(hint);}
+  const issues=inspectDraft(draft);
+  if(issues.length)$('prompt-checks').replaceChildren(...issues.slice(0,3).map(issue=>{const button=el('button','check-issue',issue.text);button.addEventListener('click',()=>{changePromptView('elements');openEdit(issue.key);});return button;}));
+  else{const pass=el('p','check-pass','关键画面要素已齐全，可继续根据生图结果调整。');pass.prepend(icon('check'));$('prompt-checks').replaceChildren(pass);}
+  $('undo-latest').disabled=busy||project.revisions.length<2;$('compare-versions').disabled=busy||project.revisions.length<2;
 }
-function renderAll() { renderMode(); renderReference(); renderMessages(true); renderPrompt(); renderBusy(); }
+function renderAll() { project.brief=normalizeBrief(project.brief); renderMode(); renderBrief(); renderReference(); renderMessages(true); renderPrompt(); renderBusy(); }
 function addRevision(draft, note) {
   const changes = note ? [note] : describeChanges(currentDraft(), draft);
   project.revisions.push({ id: crypto.randomUUID(), created: Date.now(), title: project.title, draft: structuredClone(draft), changes });
 }
 function useResult(result, demo) {
-  project.title = result.title; addRevision(result.draft);
+  const changes=draftChanges(currentDraft(),result.draft);
+  if(!project.customTitle)project.title = result.title; addRevision(result.draft);
   project.observations = project.reference ? result.observations : [];
-  project.messages.push({ role: 'assistant', text: result.reply, suggestions: result.suggestions, demo });
+  project.messages.push({ role: 'assistant', text: result.reply, suggestions: result.suggestions, demo, understanding:result.understanding||'',assumptions:result.assumptions||[],changeLabels:changes.map(c=>`更新${c.label}`) });
 }
 async function referenceForRequest() {
   if (!project.reference) return null;
@@ -147,7 +170,7 @@ async function sendMessage(text) {
   const requestController = new AbortController(); controller = requestController; renderMode(); renderMessages(true); renderBusy();
   try {
     const reference = await referenceForRequest();
-    const result = await api('/api/chat', { message, messages: history, reference, draft: currentDraft(), locks: project.locks, scope: project.scope }, 'POST', requestController.signal);
+    const result = await api('/api/chat', { message, messages: history, reference, draft: currentDraft(), locks: project.locks, scope: project.scope, brief:project.brief }, 'POST', requestController.signal);
     if (project.id !== sessionId || requestController.signal.aborted) return;
     useResult(result,false); persist();
   } catch (error) {
@@ -162,7 +185,8 @@ async function loadExample() {
   project = blankProject(); project.mode = 'demo'; project.title = '雨窗边的慢时光';
   project.reference = { name: '雨窗咖啡馆 · AI 生成示例', assetPath: '/assets/cafe-reference.png' };
   project.observations = structuredClone(DEMO_OBSERVATIONS);
-  project.messages = [{ role:'user',text:'我想做一张这样的咖啡馆图片，安静一点，有电影感。',demo:true },{ role:'assistant',text:DEMO_REPLY,suggestions:DEMO_CHOICES,demo:true }];
+  project.brief={...DEFAULT_BRIEF,goal:'用雨窗与柔和暖光，做一张安静、有电影氛围的咖啡馆画面'};
+  project.messages = [{ role:'user',text:'我想做一张这样的咖啡馆图片，安静一点，有电影感。',demo:true },{ role:'assistant',text:DEMO_REPLY,suggestions:DEMO_CHOICES,demo:true,understanding:'保留雨窗的氛围与冷暖光，把“电影感”落实到光线、配色和构图。',assumptions:['先以 4:5 竖版作为起点，可以在画面要素里调整。'] }];
   addRevision(DEMO_DRAFT); renderAll(); document.querySelector('.prompt-panel').scrollTop = 0; document.querySelector('.reference-panel').scrollTop = 0; await persist();
 }
 function switchPanel(panel) { document.querySelector('.studio').dataset.activePanel = panel; document.querySelectorAll('[data-panel]').forEach(button => button.setAttribute('aria-current',String(button.dataset.panel === panel))); }
@@ -191,7 +215,9 @@ async function uploadFile(file) {
   if (!['image/png','image/jpeg','image/webp'].includes(file.type)) { toast('请选择 PNG、JPG 或 WebP 图片。'); return; }
   if (file.size > 15*1024*1024) { toast('图片不能超过 15 MB，请先缩小图片。'); return; }
   try {
+    const uploadSession=project.id;
     const dataUrl = await resizeImage(file);
+    if(project.id!==uploadSession)return;
     if (project.mode === 'demo') { project = blankProject(); }
     project.mode = 'live'; project.reference = { name: file.name.slice(0,160), dataUrl }; project.observations = [];
     renderAll(); persist(); toast('参考图已放好，说说你想保留什么、改变什么。'); switchPanel('conversation');
@@ -200,9 +226,10 @@ async function uploadFile(file) {
 function openSettings() {
   $('base-url').value = config.baseUrl || ''; $('model-name').value = config.model || ''; $('api-key').value = '';
   $('api-key').placeholder = config.hasKey ? '已保存密钥；留空可保留' : '粘贴服务商提供的 API Key';
+  $('json-mode').checked=!!config.jsonMode;
   $('settings-error').hidden = true; $('connection-result').hidden = true; $('provider-preset').value = 'custom'; showDialog('settings-dialog');
 }
-function settingsBody() { return { baseUrl: $('base-url').value.trim(), model: $('model-name').value.trim(), apiKey: $('api-key').value.trim() }; }
+function settingsBody() { return { baseUrl: $('base-url').value.trim(), model: $('model-name').value.trim(), apiKey: $('api-key').value.trim(),jsonMode:$('json-mode').checked }; }
 async function saveSettings(event) {
   event.preventDefault(); if (!$('settings-form').reportValidity()) return;
   $('save-settings').disabled = true; $('settings-error').hidden = true;
@@ -229,18 +256,88 @@ function openVersions() {
     const row = el('div','version-item'), info = el('div','version-info'); info.append(el('h3','',`第 ${index+1} 版${index === project.revisions.length-1 ? ' · 当前' : ''}`),el('p','',revision.changes.join('；')));
     const time = el('time','',new Date(revision.created).toLocaleString('zh-CN')); info.append(time);
     const restore = el('button','button secondary',index === project.revisions.length-1 ? '当前版本' : '恢复'); restore.disabled = index === project.revisions.length-1;
-    restore.addEventListener('click', () => { project.title = revision.title || project.title; addRevision(revision.draft,`恢复自第 ${index+1} 版`); project.messages.push({ role:'note',text:`已恢复第 ${index+1} 版画面。后续对话会基于恢复后的版本。` }); $('versions-dialog').close(); renderAll(); persist(); toast('已恢复，原有版本仍保留。'); }); row.append(info,restore); return row;
+    restore.addEventListener('click', () => { $('versions-dialog').close();restoreRevision(index); }); row.append(info,restore); return row;
   }).reverse()); showDialog('versions-dialog');
 }
 async function copyPrompt() {
-  try { await navigator.clipboard.writeText(composePrompt(currentDraft(),language)); toast('已复制当前提示词'); }
+  try { await navigator.clipboard.writeText(formattedPrompt(currentDraft(),language,project.brief.target)); toast('已复制当前提示词'); }
   catch { toast('浏览器未允许复制，可以使用“导出提示词”保存内容。'); }
 }
 function exportPrompt() {
   const draft = currentDraft(); if (!draft) return;
-  const text = `# ${project.title}\n\n${project.mode === 'demo' ? '> 预设示例内容，非实时 AI 分析。\n\n' : ''}## 中文提示词\n\n${composePrompt(draft,'zh')}\n\n## English\n\n${composePrompt(draft,'en')}\n\n---\n由映词整理 · 第 ${project.revisions.length} 版\n`;
+  const text = `# ${project.title}\n\n${project.mode === 'demo' ? '> 预设示例内容，非实时 AI 分析。\n\n' : ''}## 中文提示词\n\n${formattedPrompt(draft,'zh',project.brief.target)}\n\n## English\n\n${formattedPrompt(draft,'en',project.brief.target)}\n\n---\n由映词整理 · 第 ${project.revisions.length} 版\n`;
   const blob = new Blob([text],{ type:'text/markdown;charset=utf-8' }), url = URL.createObjectURL(blob), link = el('a');
   link.href = url; link.download = `映词-${project.title.replace(/[<>:"/\\|?*\u0000-\u001f]/g,'-').slice(0,60)}-v${project.revisions.length}.md`; link.click(); setTimeout(() => URL.revokeObjectURL(url),1000); toast('提示词已导出');
+}
+
+function changePromptView(view) {
+  promptView=view;
+  $('prompt-preview').hidden=view!=='preview';$('element-editor').hidden=view!=='elements';
+  document.querySelectorAll('[data-prompt-view]').forEach(button=>button.setAttribute('aria-pressed',String(button.dataset.promptView===view)));
+}
+function renderBrief() {
+  const brief=project.brief;
+  $('project-name').textContent=project.title;
+  $('brief-summary').textContent=brief.goal||'这次想怎么画？';
+  $('brief-details').textContent=`${PURPOSES.find(p=>p.key===brief.purpose).label} · ${REFERENCE_MODES.find(r=>r.key===brief.referenceMode).label} · ${brief.editMode==='refine'?'局部微调':'重新构思'}`;
+}
+function openBrief() {
+  const brief=project.brief;
+  $('brief-goal').value=brief.goal;$('brief-purpose').value=brief.purpose;$('brief-reference').value=brief.referenceMode;$('brief-edit-mode').value=brief.editMode;
+  showDialog('brief-dialog');
+}
+function restoreRevision(index,note) {
+  if(busy)return;
+  const revision=project.revisions[index];if(!revision)return;
+  if(!project.customTitle)project.title=revision.title||project.title;addRevision(revision.draft,note||`恢复自第 ${index+1} 版`);
+  project.messages.push({role:'note',text:`已恢复第 ${index+1} 版画面。历史版本都保留，可以继续调整。`});
+  renderAll();persist();toast('已恢复，历史版本仍保留。');
+}
+function renderComparison() {
+  const before=project.revisions[Number($('compare-before').value)],after=project.revisions[Number($('compare-after').value)];
+  if(!before||!after)return;
+  const changes=draftChanges(before.draft,after.draft);
+  if(!changes.length){$('compare-content').replaceChildren(el('p','helper','这两个版本的画面要素相同。'));return;}
+  $('compare-content').replaceChildren(...changes.map(change=>{
+    const row=el('section','diff-row'),columns=el('div','diff-columns');
+    row.append(el('h3','',change.label));columns.append(el('p','diff-before',change.before[language]||'未设定'),el('p','diff-after',change.after[language]||'未设定'));row.append(columns);return row;
+  }));
+}
+function openComparison() {
+  if(project.revisions.length<2)return;
+  for(const id of ['compare-before','compare-after'])$(id).replaceChildren(...project.revisions.map((revision,index)=>{const option=el('option','',`第 ${index+1} 版 · ${revision.changes.join('、')}`);option.value=String(index);return option;}));
+  $('compare-before').value=String(project.revisions.length-2);$('compare-after').value=String(project.revisions.length-1);renderComparison();showDialog('compare-dialog');
+}
+function updateReferenceInspector() {
+  const image=$('reference-image');if(!project?.reference||!image.naturalWidth)return;
+  try {
+    const canvas=document.createElement('canvas');canvas.width=48;canvas.height=48;const ctx=canvas.getContext('2d',{willReadFrequently:true});ctx.drawImage(image,0,0,48,48);
+    const colors=paletteFromPixels(ctx.getImageData(0,0,48,48).data);
+    $('reference-size').textContent=`${image.naturalWidth} × ${image.naturalHeight} 像素`;
+    $('reference-colors').replaceChildren(...colors.map(color=>{
+      const button=el('button','color-chip'),svg=document.createElementNS('http://www.w3.org/2000/svg','svg'),rect=document.createElementNS('http://www.w3.org/2000/svg','rect');
+      svg.setAttribute('viewBox','0 0 32 28');svg.setAttribute('aria-hidden','true');rect.setAttribute('width','32');rect.setAttribute('height','28');rect.setAttribute('rx','6');rect.setAttribute('fill',color);svg.append(rect);
+      button.append(svg,el('span','',color));button.setAttribute('aria-label',`复制颜色 ${color}`);button.addEventListener('click',async()=>{try{await navigator.clipboard.writeText(color);toast(`已复制颜色 ${color}`);}catch{toast(`颜色值：${color}`);}});return button;
+    }));$('palette-section').hidden=!colors.length;
+  } catch { $('palette-section').hidden=true; }
+}
+function downloadData(contents,type,filename) {
+  const blob=new Blob([contents],{type}),url=URL.createObjectURL(blob),link=el('a');link.href=url;link.download=filename;link.click();setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+function backupCurrentProject() {
+  if(busy)return;
+  const content=JSON.stringify({format:'yingci-project',version:1,project},null,2);
+  downloadData(content,'application/json;charset=utf-8',`映词-创作备份-${project.id.slice(0,8)}.json`);toast('创作备份已导出，包含参考图、对话和版本，不含模型密钥。');
+}
+async function importProjectFile(file) {
+  if(!file||busy)return;
+  if(file.size>8*1024*1024){toast('备份超过 8 MB，请选择较小的创作备份。');return;}
+  try {
+    const data=JSON.parse(await file.text());
+    if(data.format!=='yingci-project'||data.version!==1||!data.project)throw new Error('请选择由映词导出的创作备份 JSON 文件。');
+    const copy={...data.project,id:crypto.randomUUID(),created:Date.now(),updated:Date.now(),title:String(data.project.title||'导入的创作').slice(0,60)};
+    await saveProject(copy);const loaded=await loadProject(copy.id);cancelRequest();project=loaded;renderAll();rememberId();$('projects-dialog').close();toast('创作已导入为一份新记录，原记录没有覆盖。');
+  } catch(error) {toast(error.message||'备份无法读取，请检查文件是否完整。');}
 }
 
 hydrateIcons();
@@ -248,6 +345,25 @@ document.querySelectorAll('[data-close]').forEach(button => button.addEventListe
 document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('click',event => { if (event.target === dialog) { const box = dialog.getBoundingClientRect(); if (event.clientX < box.left || event.clientX > box.right || event.clientY < box.top || event.clientY > box.bottom) dialog.close(); } }));
 document.querySelectorAll('[data-panel]').forEach(button => button.addEventListener('click', () => switchPanel(button.dataset.panel)));
 document.querySelectorAll('[data-language]').forEach(button => button.addEventListener('click', () => { language = button.dataset.language; renderPrompt(); }));
+document.querySelectorAll('[data-prompt-view]').forEach(button=>button.addEventListener('click',()=>changePromptView(button.dataset.promptView)));
+$('edit-brief').addEventListener('click',openBrief);
+$('brief-form').addEventListener('submit',event=>{
+  event.preventDefault();if(busy)return;const oldMode=project.brief.referenceMode;
+  project.brief=normalizeBrief({...project.brief,goal:$('brief-goal').value,purpose:$('brief-purpose').value,referenceMode:$('brief-reference').value,editMode:$('brief-edit-mode').value});
+  if(oldMode!==project.brief.referenceMode){if(project.brief.referenceMode==='style')project.scope=['style','palette','lighting'];else if(project.brief.referenceMode==='composition')project.scope=['composition'];else if(project.brief.referenceMode==='close')project.scope=[...FIELD_KEYS];}
+  $('brief-dialog').close();renderBrief();renderReference();persist();toast('方向已保存，下一次对话会结合这些要求。');
+});
+$('output-target').addEventListener('change',()=>{project.brief.target=$('output-target').value;renderPrompt();persist();});
+$('compare-versions').addEventListener('click',openComparison);
+$('compare-before').addEventListener('change',renderComparison);$('compare-after').addEventListener('change',renderComparison);
+$('undo-latest').addEventListener('click',()=>restoreRevision(project.revisions.length-2,'撤销上次修改，保留全部历史'));
+$('rename-project').addEventListener('click',()=>{$('project-name-input').value=project.title;showDialog('rename-dialog');});
+$('rename-form').addEventListener('submit',event=>{event.preventDefault();const title=$('project-name-input').value.trim();if(!title||busy)return;project.title=title;project.customTitle=true;$('rename-dialog').close();renderBrief();renderPrompt();persist();});
+$('reference-image').addEventListener('load',updateReferenceInspector);
+$('import-project').addEventListener('click',()=>$('project-input').click());$('project-input').addEventListener('change',event=>{importProjectFile(event.target.files[0]);event.target.value='';});
+$('backup-project').addEventListener('click',backupCurrentProject);
+$('rail-help').addEventListener('click',()=>showDialog('help-dialog'));
+$('attach-top').addEventListener('click',()=>{if(!busy)$('image-input').click();});
 $('open-settings').addEventListener('click',openSettings);
 $('banner-action').addEventListener('click', () => { if (project.mode === 'demo' && config.configured) { project.mode = 'live'; renderMode(); persist(); $('message-input').focus(); } else openSettings(); });
 $('settings-form').addEventListener('submit',saveSettings);

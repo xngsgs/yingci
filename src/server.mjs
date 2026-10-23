@@ -39,8 +39,8 @@ export async function createApp({ directory = join(root, '.local'), env = proces
         if(req.method==='PUT') return json(res,200,await projects.save(id,await readJson(req)));
         if(req.method==='DELETE') return json(res,200,await projects.delete(id));
       }
-      if (req.method === 'GET' && url.pathname === '/api/config') return json(res, 200, config.public());
-      if (req.method === 'PUT' && url.pathname === '/api/config') return json(res, 200, await config.save(await readJson(req)));
+      if (req.method === 'GET' && url.pathname === '/api/config') return json(res, 200, { ...config.public(), testMode: env.YINGCI_TEST_MODE === '1' });
+      if (req.method === 'PUT' && url.pathname === '/api/config') return json(res, 200, { ...await config.save(await readJson(req)), testMode: env.YINGCI_TEST_MODE === '1' });
       if (req.method === 'POST' && url.pathname === '/api/test') {
         const candidate = config.preview(await readJson(req));
         return json(res, 200, await testProvider(candidate, { signal: AbortSignal.timeout(30_000), fetchImpl }));
