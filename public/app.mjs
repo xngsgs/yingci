@@ -3,10 +3,15 @@ import { hydrateIcons, icon } from './icons.mjs';
 import { saveProject, listProjects, loadProject, deleteProject } from './storage.mjs';
 import { DEMO_DRAFT, DEMO_CHOICES, DEMO_REPLY, DEMO_OBSERVATIONS, demoResult } from './demo.mjs';
 import { DEFAULT_BRIEF, PURPOSES, REFERENCE_MODES, normalizeBrief, formattedPrompt, draftChanges, inspectDraft, paletteFromPixels } from './studio.mjs';
+import { FEEDBACK_ISSUES } from './feedback.mjs';
+import { mountWorkspace } from './workspace.mjs';
+import { discardPendingTurn } from './requests.mjs';
 
 const $ = id => document.getElementById(id);
 const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text != null) node.textContent = text; return node; };
 let project, config = { configured: false }, language = 'zh', promptView = 'preview', busy = false, controller, editKey, toastTimer, saveQueue = Promise.resolve();
+let workspace;
+let pendingTurn = null;
 function toast(message) { $('toast').textContent = message; $('toast').hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => $('toast').hidden = true, 4200); }
 function showDialog(id) { if (!$(id).open) $(id).showModal(); }
 function currentDraft() { return project.revisions.at(-1)?.draft || null; }
@@ -27,7 +32,12 @@ async function api(path, body, method = 'POST', signal) {
   if (!response.ok) throw new Error(data.error || '请求未完成，请重试。');
   return data;
 }
-function cancelRequest() { controller?.abort(); controller = null; busy = false; renderBusy(); }
+function cancelRequest() {
+  controller?.abort(); controller = null; busy = false;
+  const restored = discardPendingTurn(pendingTurn,project?.id);
+  if(restored!==null)$('message-input').value=restored;
+  pendingTurn = null; renderBusy();
+}
 function renderBusy() {
   $('send-message').hidden = busy; $('cancel-message').hidden = !busy;
   $('message-input').disabled = busy;
@@ -39,6 +49,7 @@ function renderBusy() {
   if(project) { $('undo-latest').disabled=busy||project.revisions.length<2; $('compare-versions').disabled=busy||project.revisions.length<2; }
   document.querySelectorAll('.lock-button,.field-text,.scope-option,.quick-action').forEach(button=>button.disabled=busy);
   for(const id of ['edit-avoid','attach-top','replace-reference','remove-reference','backup-project','import-project'])$(id).disabled=busy;
+  workspace?.renderBusy(busy);
 }
 function renderMode() {
   const demo = project.mode === 'demo';
@@ -135,7 +146,7 @@ function renderPrompt() {
   else{const pass=el('p','check-pass','关键画面要素已齐全，可继续根据生图结果调整。');pass.prepend(icon('check'));$('prompt-checks').replaceChildren(pass);}
   $('undo-latest').disabled=busy||project.revisions.length<2;$('compare-versions').disabled=busy||project.revisions.length<2;
 }
-function renderAll() { project.brief=normalizeBrief(project.brief); renderMode(); renderBrief(); renderReference(); renderMessages(true); renderPrompt(); renderBusy(); }
+function renderAll() { project.brief=normalizeBrief(project.brief); renderMode(); renderBrief(); renderReference(); renderMessages(true); renderPrompt(); workspace?.render(); renderBusy(); }
 function addRevision(draft, note) {
   const changes = note ? [note] : describeChanges(currentDraft(), draft);
   project.revisions.push({ id: crypto.randomUUID(), created: Date.now(), title: project.title, draft: structuredClone(draft), changes });
@@ -146,12 +157,36 @@ function useResult(result, demo) {
   project.observations = project.reference ? result.observations : [];
   project.messages.push({ role: 'assistant', text: result.reply, suggestions: result.suggestions, demo, understanding:result.understanding||'',assumptions:result.assumptions||[],changeLabels:changes.map(c=>`更新${c.label}`) });
 }
-async function referenceForRequest() {
-  if (!project.reference) return null;
-  if (project.reference.dataUrl) return { name: project.reference.name, dataUrl: project.reference.dataUrl };
-  const response = await fetch(project.reference.assetPath);
+async function referenceForRequest(reference = project.reference) {
+  if (!reference) return null;
+  if (reference.dataUrl) return { name: reference.name, dataUrl: reference.dataUrl };
+  const response = await fetch(reference.assetPath);
   if (!response.ok) throw new Error('示例参考图无法读取，请重新上传图片。');
-  return { name: project.reference.name, dataUrl: await resizeImage(await response.blob()) };
+  return { name: reference.name, dataUrl: await resizeImage(await response.blob()) };
+}
+async function reviewDraft(feedback, resultReference) {
+  if (busy || !currentDraft()) return false;
+  const session = project, sessionId = project.id;
+  const body = { message: '请根据本轮效果复盘，改进当前生图提示词。', feedback, resultReference,
+    draft: structuredClone(currentDraft()), locks: [...project.locks], scope: [...project.scope],
+    brief: {...project.brief,editMode:'refine'}, messages: project.messages.filter(m => ['user','assistant'].includes(m.role)).slice(-24).map(({role,text})=>({role,text})) };
+  const requestController = new AbortController(); controller = requestController; pendingTurn = {session,kind:'review'}; busy = true; renderAll();
+  try {
+    body.reference = await referenceForRequest(session.reference);
+    if (requestController.signal.aborted || project.id !== sessionId) return false;
+    const result = await api('/api/chat',body,'POST',requestController.signal);
+    if (requestController.signal.aborted || project.id !== sessionId) return false;
+    const observations = session.mode === 'demo' ? [] : session.observations;
+    const issueLabels=feedback.issues.map(key=>FEEDBACK_ISSUES.find(issue=>issue.key===key).label);
+    session.messages.push({role:'user',text:[issueLabels.length?`效果复盘：${issueLabels.join('、')}`:'效果复盘',feedback.notes].filter(Boolean).join('\n')});
+    session.mode = 'live'; useResult(result,false); session.observations = observations;
+    await persist(); return true;
+  } catch (error) {
+    if (requestController.signal.aborted || project.id !== sessionId) return false;
+    throw error;
+  } finally {
+    if (controller === requestController) { controller = null; pendingTurn = null; busy = false; if (project.id === sessionId) renderAll(); }
+  }
 }
 async function sendMessage(text) {
   const message = text.trim(); if (!message || busy) return;
@@ -160,14 +195,14 @@ async function sendMessage(text) {
     const result = demoResult(message, currentDraft(), project.locks);
     if (result) { project.messages.push({ role: 'user', text: message, demo: true }); useResult(result,true); $('message-input').value = ''; renderAll(); persist(); return; }
     if (!config.configured) { toast('示例支持下方预设选项。连接模型后，就能自由描述你的想法。'); openSettings(); return; }
-    project.mode = 'live';
+    project.mode = 'live'; project.observations = [];
   }
   if (!config.configured) { openSettings(); return; }
   const session = project, sessionId = project.id;
   const history = project.messages.filter(m => ['user','assistant'].includes(m.role)).slice(-24).map(({ role, text }) => ({ role, text }));
   const userMessage = { role: 'user', text: message };
   session.messages.push(userMessage); $('message-input').value = ''; busy = true;
-  const requestController = new AbortController(); controller = requestController; renderMode(); renderMessages(true); renderBusy();
+  const requestController = new AbortController(); controller = requestController; pendingTurn = {session,userMessage,kind:'chat'}; renderMode(); renderMessages(true); renderBusy();
   try {
     const reference = await referenceForRequest();
     const result = await api('/api/chat', { message, messages: history, reference, draft: currentDraft(), locks: project.locks, scope: project.scope, brief:project.brief }, 'POST', requestController.signal);
@@ -177,17 +212,18 @@ async function sendMessage(text) {
     const index = session.messages.indexOf(userMessage); if (index >= 0) session.messages.splice(index,1);
     if (project.id === sessionId && !requestController.signal.aborted) { $('message-input').value = message; $('request-error').textContent = error.message; $('request-error').hidden = false; }
   } finally {
-    if (controller === requestController) { controller = null; busy = false; if (project.id === sessionId) { renderAll(); $('message-input').focus(); } }
+    if (controller === requestController) { controller = null; pendingTurn = null; busy = false; if (project.id === sessionId) { renderAll(); $('message-input').focus(); } }
   }
 }
 async function loadExample() {
   cancelRequest();
+  $('message-input').value = ''; $('request-error').hidden = true;
   project = blankProject(); project.mode = 'demo'; project.title = '雨窗边的慢时光';
   project.reference = { name: '雨窗咖啡馆 · AI 生成示例', assetPath: '/assets/cafe-reference.png' };
   project.observations = structuredClone(DEMO_OBSERVATIONS);
   project.brief={...DEFAULT_BRIEF,goal:'用雨窗与柔和暖光，做一张安静、有电影氛围的咖啡馆画面'};
   project.messages = [{ role:'user',text:'我想做一张这样的咖啡馆图片，安静一点，有电影感。',demo:true },{ role:'assistant',text:DEMO_REPLY,suggestions:DEMO_CHOICES,demo:true,understanding:'保留雨窗的氛围与冷暖光，把“电影感”落实到光线、配色和构图。',assumptions:['先以 4:5 竖版作为起点，可以在画面要素里调整。'] }];
-  addRevision(DEMO_DRAFT); renderAll(); document.querySelector('.prompt-panel').scrollTop = 0; document.querySelector('.reference-panel').scrollTop = 0; await persist();
+  addRevision(DEMO_DRAFT); renderAll(); workspace?.show('studio'); document.querySelector('.prompt-panel').scrollTop = 0; document.querySelector('.reference-panel').scrollTop = 0; await persist();
 }
 function switchPanel(panel) { document.querySelector('.studio').dataset.activePanel = panel; document.querySelectorAll('[data-panel]').forEach(button => button.setAttribute('aria-current',String(button.dataset.panel === panel))); }
 function openEdit(key) {
@@ -233,7 +269,7 @@ function settingsBody() { return { baseUrl: $('base-url').value.trim(), model: $
 async function saveSettings(event) {
   event.preventDefault(); if (!$('settings-form').reportValidity()) return;
   $('save-settings').disabled = true; $('settings-error').hidden = true;
-  try { config = await api('/api/config', settingsBody(), 'PUT'); $('api-key').value = ''; $('settings-dialog').close(); renderMode(); toast('连接配置已保存在本机。发送一条消息开始创作。'); }
+  try { config = await api('/api/config', settingsBody(), 'PUT'); $('api-key').value = ''; $('settings-dialog').close(); renderMode(); workspace?.render(); toast('连接配置已保存在本机。发送一条消息开始创作。'); }
   catch (error) { $('settings-error').textContent = error.message; $('settings-error').hidden = false; }
   finally { $('save-settings').disabled = false; }
 }
@@ -244,7 +280,7 @@ async function openProjects() {
     $('project-list').replaceChildren(...projects.map(item => {
       const row = el('div','project-item'), thumb = el('img','project-thumb'); thumb.alt = ''; thumb.src = item.reference?.dataUrl || item.reference?.assetPath || '/assets/mark.svg';
       const button = el('button','project-open'); button.append(el('strong','',item.title),el('p','',`${item.mode === 'demo' ? '示例' : '自由创作'} · ${item.revisionCount} 个版本 · ${new Date(item.updated).toLocaleDateString('zh-CN')}`));
-      button.addEventListener('click', async () => { try { const loaded=await loadProject(item.id); cancelRequest(); project = loaded; $('message-input').value = ''; $('request-error').hidden = true; rememberId(); renderAll(); $('projects-dialog').close(); } catch { toast('这份创作暂时无法读取，请检查本机服务。'); } });
+      button.addEventListener('click', async () => { try { const loaded=await loadProject(item.id); cancelRequest(); project = loaded; $('message-input').value = ''; $('request-error').hidden = true; rememberId(); renderAll(); workspace?.show('studio'); $('projects-dialog').close(); } catch { toast('这份创作暂时无法读取，请检查本机服务。'); } });
       const remove = el('button','icon-button'); remove.append(icon('trash')); remove.setAttribute('aria-label',`删除创作 ${item.title}`);
       remove.addEventListener('click', async () => { if (!confirm(`删除“${item.title}”的本机记录？此操作会移除它的对话、参考图和全部版本。`)) return; try { await deleteProject(item.id); if (project.id === item.id) { cancelRequest(); project = blankProject(); renderAll(); persist(); } openProjects(); } catch { toast('删除未完成，请重试。'); } });
       row.append(thumb,button,remove); return row;
@@ -336,7 +372,7 @@ async function importProjectFile(file) {
     const data=JSON.parse(await file.text());
     if(data.format!=='yingci-project'||data.version!==1||!data.project)throw new Error('请选择由映词导出的创作备份 JSON 文件。');
     const copy={...data.project,id:crypto.randomUUID(),created:Date.now(),updated:Date.now(),title:String(data.project.title||'导入的创作').slice(0,60)};
-    await saveProject(copy);const loaded=await loadProject(copy.id);cancelRequest();project=loaded;renderAll();rememberId();$('projects-dialog').close();toast('创作已导入为一份新记录，原记录没有覆盖。');
+    await saveProject(copy);const loaded=await loadProject(copy.id);cancelRequest();project=loaded;renderAll();workspace?.show('studio');rememberId();$('projects-dialog').close();toast('创作已导入为一份新记录，原记录没有覆盖。');
   } catch(error) {toast(error.message||'备份无法读取，请检查文件是否完整。');}
 }
 
@@ -365,7 +401,7 @@ $('backup-project').addEventListener('click',backupCurrentProject);
 $('rail-help').addEventListener('click',()=>showDialog('help-dialog'));
 $('attach-top').addEventListener('click',()=>{if(!busy)$('image-input').click();});
 $('open-settings').addEventListener('click',openSettings);
-$('banner-action').addEventListener('click', () => { if (project.mode === 'demo' && config.configured) { project.mode = 'live'; renderMode(); persist(); $('message-input').focus(); } else openSettings(); });
+$('banner-action').addEventListener('click', () => { if (project.mode === 'demo' && config.configured) { project.mode = 'live'; project.observations=[]; renderAll(); persist(); $('message-input').focus(); } else openSettings(); });
 $('settings-form').addEventListener('submit',saveSettings);
 $('provider-preset').addEventListener('change', () => {
   const preset = $('provider-preset').value;
@@ -384,13 +420,13 @@ $('test-connection').addEventListener('click',async () => {
 });
 $('open-projects').addEventListener('click',openProjects);
 $('mobile-projects').addEventListener('click',openProjects);
-$('new-project').addEventListener('click', () => { cancelRequest(); project = blankProject(); $('message-input').value = ''; $('request-error').hidden = true; renderAll(); persist(); switchPanel('conversation'); $('message-input').focus(); });
+$('new-project').addEventListener('click', () => { cancelRequest(); project = blankProject(); $('message-input').value = ''; $('request-error').hidden = true; renderAll(); persist(); workspace?.show('studio'); switchPanel('conversation'); $('message-input').focus(); });
 $('load-example').addEventListener('click',loadExample);
 $('conversation-help').addEventListener('click', () => showDialog('help-dialog'));
 $('open-versions').addEventListener('click',openVersions);
 $('composer').addEventListener('submit',event => { event.preventDefault(); sendMessage($('message-input').value); });
 $('message-input').addEventListener('keydown',event => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); sendMessage($('message-input').value); } });
-$('cancel-message').addEventListener('click', () => { const pending=project.messages.at(-1); cancelRequest(); if(pending?.role==='user'){project.messages.pop();$('message-input').value=pending.text;} renderMessages(true); toast('已取消，输入内容已保留'); });
+$('cancel-message').addEventListener('click', () => { cancelRequest(); renderAll(); toast('已取消，输入内容与历史消息已保留'); });
 for (const id of ['empty-upload','replace-reference','attach-reference']) $(id).addEventListener('click', () => { if (!busy) $('image-input').click(); });
 $('image-input').addEventListener('change',event => { uploadFile(event.target.files[0]); event.target.value = ''; });
 $('reference-area').addEventListener('dragover',event => { event.preventDefault(); $('reference-area').classList.add('dragging'); });
@@ -411,4 +447,16 @@ try {
   if(latest) project=await loadProject(latest.id);
 } catch { toast('本机记录暂时无法读取，请检查服务是否仍在运行。'); }
 if (project) renderAll(); else await loadExample();
+workspace = mountWorkspace({getProject:()=>project,getConfig:()=>config,isBusy:()=>busy,currentDraft,api,persist,renderAll,resizeImage,openSettings,toast,cancelRequest,switchPanel,reviewDraft,
+  startDraft(title,draft,goal) {
+    cancelRequest(); project=blankProject(); project.title=title; project.brief.goal=goal;
+    project.messages.push({role:'note',text:'已从灵感库带入这份提示词，可以按自己的想法继续修改。'});
+    addRevision(draft,'从预设或收藏建立第一版'); $('message-input').value=''; $('request-error').hidden=true; renderAll(); persist(); switchPanel('conversation');
+  },
+  applyDraft(draft,note) {
+    if(project.mode==='demo')project.observations=[];
+    project.mode='live'; addRevision(draft,note); project.messages.push({role:'note',text:note+'，其余要素和锁定内容保留。'}); renderAll(); persist();
+  },
+});
+workspace.show(location.hash.slice(1));
 document.querySelector('.prompt-panel').scrollTop = 0;

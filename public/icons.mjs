@@ -1,4 +1,8 @@
 const paths = {
+  library: '<path d="M4 4h5v16H4zM11 4h4v16h-4zM17 5l3-1 4 15-3 1z"/>',
+  bookmark: '<path d="M6 3h12v18l-6-4-6 4z"/>',
+  review: '<rect x="3" y="3" width="14" height="17" rx="2"/><path d="m7 13 3 3 7-8M20 8h2v13h-9"/>',
+  search: '<circle cx="10.5" cy="10.5" r="6.5"/><path d="m16 16 5 5"/>',
   upload: '<path d="M12 16V3m-5 5 5-5 5 5M4 16v5h16v-5"/>',
   compass: '<circle cx="12" cy="12" r="9"/><path d="m16 8-2.5 5.5L8 16l2.5-5.5z"/>',
   compare: '<path d="M10 3v18M3 7h4m-4 5h4m-4 5h4M14 7h7m-7 5h7m-7 5h7"/>',

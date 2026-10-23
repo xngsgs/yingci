@@ -1,5 +1,6 @@
 import { AppError, FIELD_KEYS, normalizeResult, textValue, validateDraft } from '../public/shared.mjs';
 import { normalizeBrief, focusedResult } from '../public/studio.mjs';
+import { normalizeFeedback, feedbackMessage } from '../public/feedback.mjs';
 
 export function validateBaseUrl(value) {
   let url;
@@ -38,7 +39,11 @@ export function validateTurn(body) {
   const locks = [...new Set(body.locks ?? [])];
   if (locks.length && !draft) throw new AppError('先建立画面，再锁定要素。');
   const scope = (Array.isArray(body.scope) ? body.scope : []).filter(k => FIELD_KEYS.includes(k));
-  return { message, history, draft, locks, scope, brief: normalizeBrief(body.brief), reference: validateImage(body.reference) };
+  const feedback = normalizeFeedback(body.feedback);
+  const resultReference = validateImage(body.resultReference);
+  if (feedback && !draft) throw new AppError('先建立一版提示词，再根据生成结果复盘。');
+  if (resultReference && !feedback) throw new AppError('请说明生成结果中需要改进的问题。');
+  return { message, history, draft, locks, scope, feedback, resultReference, brief: normalizeBrief(body.brief), reference: validateImage(body.reference) };
 }
 
 export const SYSTEM_PROMPT = `你是映词，一个帮助普通人完善生图提示词的中文创作助手。用户不懂术语，先理解日常表达，给出可修改的第一版，每轮最多问两个影响画面的关键问题，优先问一个；用户让你决定时直接做合理选择，并明确这是建议。避免夸赞和空泛的高级、杰作、8K等堆词。
@@ -49,8 +54,9 @@ export const SYSTEM_PROMPT = `你是映词，一个帮助普通人完善生图�
 
 export function buildMessages(turn) {
   const context = { currentDraft: turn.draft, lockedFields: turn.locks, referenceScope: turn.scope, creativeBrief: turn.brief };
-  const content = [{ type: 'text', text: `${turn.message}\n\n以下是应用提供的当前画面状态：\n${JSON.stringify(context)}` }];
-  if (turn.reference) content.push({ type: 'image_url', image_url: { url: turn.reference.dataUrl } });
+  const content = [{ type: 'text', text: `${turn.message}\n\n${feedbackMessage(turn.feedback)}\n以下是应用提供的当前画面状态：\n${JSON.stringify(context)}` }];
+  if (turn.reference) content.push({ type: 'text', text: '下面是目标参考图：按 referenceScope 与 referenceMode 选取灵感。' }, { type: 'image_url', image_url: { url: turn.reference.dataUrl } });
+  if (turn.resultReference) content.push({ type: 'text', text: '下面是用户实际生成的结果图：用于检查反馈问题，不要把其中缺陷当作目标画风。' }, { type: 'image_url', image_url: { url: turn.resultReference.dataUrl } });
   return [{ role: 'system', content: SYSTEM_PROMPT + COACHING_PROMPT }, ...turn.history, { role: 'user', content }];
 }
 

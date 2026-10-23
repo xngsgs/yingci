@@ -6,6 +6,7 @@ import { AppError } from '../public/shared.mjs';
 import { ConfigStore } from './config.mjs';
 import { askProvider, testProvider, validateTurn } from './provider.mjs';
 import { ProjectStore } from './projects.mjs';
+import { LibraryStore } from './library.mjs';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const MIME = { '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
@@ -19,6 +20,7 @@ async function readJson(req) {
 export async function createApp({ directory = join(root, '.local'), env = process.env, fetchImpl = fetch } = {}) {
   const config = new ConfigStore(directory, env); await config.load();
   const projects = new ProjectStore(join(directory,'projects'));
+  const library = new LibraryStore(join(directory,'library'));
   let active = false;
   const server = createServer(async (req, res) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
@@ -32,6 +34,13 @@ export async function createApp({ directory = join(root, '.local'), env = proces
       if (req.headers.origin && req.headers.origin !== origin) throw new AppError('请求来源不受支持。', 403);
       if (!['GET', 'HEAD'].includes(req.method) && req.headers['x-yingci-request'] !== '1') throw new AppError('请求校验失败，请刷新页面。', 403);
       const url = new URL(req.url, origin);
+      if (req.method === 'GET' && url.pathname === '/api/library') return json(res,200,await library.list());
+      if (url.pathname.startsWith('/api/library/')) {
+        const id=url.pathname.slice('/api/library/'.length);
+        if(req.method==='GET') return json(res,200,await library.get(id));
+        if(req.method==='PUT') return json(res,200,await library.save(id,await readJson(req)));
+        if(req.method==='DELETE') return json(res,200,await library.delete(id));
+      }
       if (req.method === 'GET' && url.pathname === '/api/projects') return json(res,200,await projects.list());
       if (url.pathname.startsWith('/api/projects/')) {
         const id=url.pathname.slice('/api/projects/'.length);

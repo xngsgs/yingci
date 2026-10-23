@@ -55,5 +55,5 @@ test('native JSON mode is opt-in and sends no extra requests',async()=>{
 });
 test('project validation preserves coaching metadata, defaults old data and strips unrelated secret fields',()=>{
   const id=randomUUID(),p={id,title:'旧创作',mode:'live',created:Date.now(),updated:Date.now(),scope:[],locks:[],messages:[{role:'assistant',text:'建议',understanding:'理解',assumptions:['推测'],changeLabels:['更新主体']}],revisions:[{id:randomUUID(),created:Date.now(),draft:DEMO_DRAFT,changes:['第一版']}],observations:[],apiKey:'do-not-keep'};
-  const output=validateProject(p,id);assert.deepEqual(output.brief,DEFAULT_BRIEF);assert.equal(output.apiKey,undefined);assert.deepEqual(output.messages[0].assumptions,['推测']);assert.equal(output.schemaVersion,2);
+  const output=validateProject(p,id);assert.deepEqual(output.brief,DEFAULT_BRIEF);assert.equal(output.apiKey,undefined);assert.deepEqual(output.messages[0].assumptions,['推测']);assert.equal(output.schemaVersion,3);assert.equal(output.review,null);
 });
