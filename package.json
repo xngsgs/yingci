@@ -1,0 +1,15 @@
+{
+  "name": "yingci",
+  "version": "0.1.0",
+  "description": "映词：用参考图和自然对话，一起完善生图提示词。",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.mjs",
+    "dev": "node --watch --env-file-if-exists=.env src/server.mjs",
+    "check": "node scripts/check.mjs",
+    "test": "node --test"
+  }
+}

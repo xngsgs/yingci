@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#F7F8FA">
+  <meta name="description" content="上传参考图，用自然对话慢慢完善你的生图提示词。">
+  <title>映词 · 把想法，慢慢画清楚</title>
+  <link rel="icon" href="/assets/mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.mjs"></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="映词首页"><img src="/assets/mark.svg" width="34" height="34" alt=""><strong>映词</strong><span>把想法，慢慢画清楚</span></a>
+    <nav class="main-nav" aria-label="主导航"><span class="nav-current">创作室</span><button id="open-projects" class="text-button">最近创作</button></nav>
+    <div class="top-actions"><button id="mobile-projects" class="icon-button mobile-projects" aria-label="最近创作"><span data-icon="history"></span></button><button id="open-settings" class="connection"><span class="status-dot"></span><span id="connection-label">连接模型</span><span data-icon="settings"></span></button><button id="new-project" class="button primary"><span data-icon="plus"></span><span>新创作</span></button></div>
+  </header>
+  <div id="mode-banner" class="mode-banner"><span data-icon="info"></span><span id="mode-description">示例体验：使用预设对话演示流程，尚未连接 AI。</span><button id="banner-action" class="text-button">连接自己的模型</button></div>
+  <nav class="mobile-tabs" aria-label="创作面板"><button data-panel="reference">参考图</button><button data-panel="conversation" aria-current="true">对话</button><button data-panel="prompt">提示词</button></nav>
+  <main class="studio" data-active-panel="conversation">
+    <aside class="reference-panel" aria-labelledby="reference-title">
+      <div class="panel-heading"><h2 id="reference-title">参考与灵感</h2><span class="muted small">可选</span></div>
+      <div id="reference-area" class="reference-area">
+        <button id="reference-preview" class="reference-preview" aria-label="放大参考图" hidden><img id="reference-image" alt="当前参考图"><span class="image-zoom" data-icon="expand"></span></button>
+        <div id="upload-empty" class="upload-empty"><span class="upload-glyph" data-icon="image"></span><strong>放一张喜欢的图</strong><p>拖放图片到这里，或点击上传</p><button id="empty-upload" class="button secondary">选择图片</button><span class="small muted">PNG、JPG、WebP，最大 15 MB</span></div>
+        <div id="reference-caption" class="reference-caption" hidden><span id="reference-name"></span><button id="replace-reference" class="text-button">更换</button><button id="remove-reference" class="icon-button" title="移除参考图" aria-label="移除参考图"><span data-icon="close"></span></button></div>
+      </div>
+      <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden>
+      <section class="reference-scope"><div class="section-heading"><h3>想参考哪些部分？</h3><span class="small muted">点选保留</span></div><div id="scope-options" class="scope-options"></div><p class="helper">选中的部分会作为参考，其余可以自由改变。</p></section>
+      <section class="observations-section"><div class="section-heading"><h3>画面里的线索</h3><span id="observation-source" class="small muted"></span></div><div id="observations"></div></section>
+      <button id="load-example" class="example-link"><span data-icon="spark"></span><span>用示例找找感觉</span><span data-icon="arrow-right"></span></button>
+    </aside>
+    <section class="conversation-panel" aria-labelledby="conversation-title">
+      <div class="conversation-heading"><div><div class="assistant-label"><span class="mini-mark"></span>你的生图搭档</div><h1 id="conversation-title">一起，把画面想清楚</h1><p>不必懂术语，像聊天一样说就好。</p></div><button id="conversation-help" class="icon-button" aria-label="使用说明" title="使用说明"><span data-icon="help"></span></button></div>
+      <div id="messages" class="messages" role="log" aria-label="创作对话" aria-live="polite"></div>
+      <div class="composer-area">
+        <div id="request-error" class="request-error" role="alert" hidden></div>
+        <form id="composer" class="composer"><label class="sr-only" for="message-input">描述你想要的画面</label><textarea id="message-input" placeholder="说说你想画什么，或想改哪里……" rows="2" maxlength="4000"></textarea><div class="composer-bottom"><button type="button" id="attach-reference" class="attach-button" title="添加参考图"><span data-icon="paperclip"></span><span>参考图</span></button><span id="composer-mode" class="small muted"></span><button id="send-message" class="send-button" type="submit" aria-label="发送消息"><span data-icon="arrow-up"></span></button><button id="cancel-message" class="text-button" type="button" hidden>取消</button></div></form>
+        <div class="composer-footnote"><span>Enter 发送，Shift + Enter 换行</span><span id="privacy-note">示例无需联网调用模型</span></div>
+      </div>
+    </section>
+    <aside class="prompt-panel" aria-labelledby="prompt-title">
+      <div class="panel-heading"><h2 id="prompt-title">当前提示词</h2><button id="open-versions" class="version-button" disabled><span data-icon="history"></span><span id="version-label">尚无版本</span></button></div>
+      <div id="prompt-empty" class="prompt-empty"><span data-icon="pen"></span><h3>画面会在这里成形</h3><p>说出你的想法，或上传一张参考图。我们会一起整理出第一版提示词。</p></div>
+      <div id="prompt-content" class="prompt-content" hidden>
+        <div class="draft-heading"><span class="draft-dot"></span><h3 id="draft-title"></h3><span id="save-state" class="small muted" role="status">已保存在本机</span></div>
+        <div class="prompt-toolbar"><div class="language-tabs" role="group" aria-label="提示词语言"><button data-language="zh" aria-pressed="true">中文</button><button data-language="en" aria-pressed="false">English</button></div><button id="copy-prompt" class="copy-button"><span data-icon="copy"></span>复制提示词</button></div>
+        <div class="prompt-intro"><span>点击文字编辑，锁定满意的部分。</span><span data-icon="lock"></span></div>
+        <div id="prompt-fields" class="prompt-fields"></div>
+        <div class="prompt-options"><label for="aspect-ratio">画面比例</label><select id="aspect-ratio"><option value="auto">由画面决定</option><option>1:1</option><option>4:5</option><option>3:4</option><option>2:3</option><option>16:9</option><option>9:16</option></select></div>
+        <button id="edit-avoid" class="avoid-block"><span>避免出现</span><span id="avoid-text"></span><span data-icon="edit"></span></button>
+        <div class="revision-note"><span data-icon="check"></span><span id="revision-note"></span></div>
+        <div class="prompt-footer"><button id="export-prompt" class="text-button"><span data-icon="download"></span>导出提示词</button><span>提示词不会直接生成图片</span></div>
+      </div>
+    </aside>
+  </main>
+  <dialog id="settings-dialog" class="dialog settings-dialog" aria-labelledby="settings-title">
+    <form id="settings-form"><div class="dialog-heading"><div><span class="dialog-eyebrow">让映词开始理解你的想法</span><h2 id="settings-title">连接 AI 模型</h2></div><button type="button" class="icon-button" data-close="settings-dialog" aria-label="关闭"><span data-icon="close"></span></button></div>
+      <p class="dialog-description">选择支持图片理解的模型。你上传的参考图和对话会在发送时传给这家服务。</p>
+      <label class="form-label" for="provider-preset">模型服务</label><select id="provider-preset"><option value="custom">自定义兼容接口</option><option value="qwen">阿里云百炼 / 千问</option><option value="openai">OpenAI</option><option value="local">本地模型 / Ollama</option></select>
+      <label class="form-label" for="base-url">接口地址</label><input id="base-url" type="url" placeholder="https://你的服务地址/v1" required maxlength="500"><p id="provider-hint" class="helper">填写服务商提供的兼容接口基础地址，无需添加 /chat/completions。</p>
+      <label class="form-label" for="model-name">视觉模型名称</label><input id="model-name" placeholder="填写服务商控制台中的模型 ID" required maxlength="160">
+      <label class="form-label" for="api-key">API Key</label><input id="api-key" type="password" autocomplete="new-password" placeholder="密钥只保存在本机，不会显示在对话里" maxlength="1000"><p class="helper">已有密钥时留空即可保留。更换接口地址时需重新填写。本地服务可填其要求的占位密钥。</p>
+      <p id="settings-error" class="form-error" role="alert" hidden></p><p id="connection-result" class="connection-result" role="status" hidden></p>
+      <div class="dialog-actions"><button id="test-connection" type="button" class="button secondary">测试连接</button><button id="save-settings" type="submit" class="button primary">保存连接</button></div><p class="small muted settings-note">测试会发送一条简短文字并产生服务商的调用用量；图片理解能力需用实际参考图验证。</p>
+    </form>
+  </dialog>
+  <dialog id="projects-dialog" class="dialog projects-dialog" aria-labelledby="projects-title"><div class="dialog-heading"><div><span class="dialog-eyebrow">灵感留在这里</span><h2 id="projects-title">最近创作</h2></div><button class="icon-button" data-close="projects-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><p class="dialog-description">对话、参考图和版本保存在本机项目目录中，不会上传到 GitHub。</p><div id="project-list"></div></dialog>
+  <dialog id="versions-dialog" class="dialog" aria-labelledby="versions-title"><div class="dialog-heading"><div><span class="dialog-eyebrow">每一步都可以回看</span><h2 id="versions-title">提示词版本</h2></div><button class="icon-button" data-close="versions-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><p class="dialog-description">恢复会保留历史，并建立一个新版本。</p><div id="version-list"></div></dialog>
+  <dialog id="edit-dialog" class="dialog" aria-labelledby="edit-title"><form id="edit-form"><div class="dialog-heading"><h2 id="edit-title">编辑画面要素</h2><button type="button" class="icon-button" data-close="edit-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><p class="dialog-description">中英文分别用于对应语言的提示词，请同步表达同一个意思。</p><label class="form-label" for="edit-zh">中文</label><textarea id="edit-zh" rows="4" maxlength="700"></textarea><label class="form-label" for="edit-en">English</label><textarea id="edit-en" rows="4" maxlength="1000"></textarea><div class="dialog-actions"><button class="button primary" type="submit">保存这一处修改</button></div></form></dialog>
+  <dialog id="image-dialog" class="image-dialog" aria-label="参考图大图"><button class="icon-button" data-close="image-dialog" aria-label="关闭大图"><span data-icon="close"></span></button><img id="expanded-image" alt="参考图大图"></dialog>
+  <dialog id="help-dialog" class="dialog" aria-labelledby="help-title"><div class="dialog-heading"><h2 id="help-title">从一句想法开始</h2><button class="icon-button" data-close="help-dialog" aria-label="关闭"><span data-icon="close"></span></button></div><div class="help-copy"><p>可以上传参考图，也可以直接说“我想画一只在窗边睡觉的猫”。</p><p>不知道怎么选？说“你帮我决定”。已经满意的部分可以锁定，下次修改会保留它。</p><p>右侧始终是当前提示词。支持中英切换、直接编辑、复制和版本回退。</p><p>示例使用预设内容；自由对话需要连接支持图片的模型。图片分析只能提供描述与建议，无法确定原图的原始提示词、模型或 seed。</p><p>创作记录由本机服务保存。重要提示词可随时导出；完整备份可以复制项目中的 .local 文件夹。</p></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+</body>
+</html>
