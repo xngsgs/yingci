@@ -3,6 +3,8 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AppError, FIELD_KEYS, textValue, validateDraft } from '../public/shared.mjs';
 import { validateImage } from './provider.mjs';
+import { normalizeBrief } from '../public/studio.mjs';
+import { normalizeFeedback } from '../public/feedback.mjs';
 
 export const validId = value => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
 function keys(value) {
@@ -27,13 +29,24 @@ export function validateProject(value, id) {
     if (!['user','assistant','note'].includes(m.role)) throw new AppError('消息角色不正确。');
     const result = { role:m.role,text:textValue(m.text,6000,'消息内容'),demo:m.demo === true };
     if (m.suggestions) result.suggestions = strings(m.suggestions,3,100);
+    if (m.understanding) result.understanding = textValue(m.understanding,800,'需求理解');
+    if (m.assumptions) result.assumptions = strings(m.assumptions,4,220);
+    if (m.changeLabels) result.changeLabels = strings(m.changeLabels,8,30);
     return result;
   });
   const observations = value.observations ?? [];
   if (!Array.isArray(observations) || observations.length > 6) throw new AppError('画面观察记录不正确。');
+  let review = null;
+  if (value.review != null) {
+    if (typeof value.review !== 'object' || Array.isArray(value.review)) throw new AppError('复盘记录格式不正确。');
+    const { issues = [], notes = '' } = value.review;
+    if (!Array.isArray(issues) || typeof notes !== 'string') throw new AppError('复盘问题格式不正确。');
+    const feedback = issues.length || notes.trim() ? normalizeFeedback({issues,notes}) : {issues:[],notes:''};
+    review = {...feedback,reference:validateImage(value.review.reference)};
+  }
   return {
-    id,title:textValue(value.title,60,'创作名称'),mode:value.mode,created:timestamp(value.created),updated:Date.now(),reference,
-    scope:keys(value.scope),locks:keys(value.locks),messages,
+    id,title:textValue(value.title,60,'创作名称'),customTitle:value.customTitle===true,mode:value.mode,created:timestamp(value.created),updated:Date.now(),reference,
+    scope:keys(value.scope),locks:keys(value.locks),messages,brief:normalizeBrief(value.brief),review,schemaVersion:3,
     revisions:value.revisions.map(r => ({id:validId(r.id)?r.id:randomUUID(),created:timestamp(r.created),title:textValue(r.title,60,'版本名称',true) || textValue(value.title,60,'创作名称'),draft:validateDraft(r.draft),changes:strings(r.changes,10,200)})),
     observations:observations.map(o=>({label:textValue(o.label,30,'观察标题'),text:textValue(o.text,300,'观察内容'),certainty:o.certainty==='seen'?'seen':'inferred'})),
   };

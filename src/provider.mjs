@@ -1,4 +1,6 @@
 import { AppError, FIELD_KEYS, normalizeResult, textValue, validateDraft } from '../public/shared.mjs';
+import { normalizeBrief, focusedResult } from '../public/studio.mjs';
+import { normalizeFeedback, feedbackMessage } from '../public/feedback.mjs';
 
 export function validateBaseUrl(value) {
   let url;
@@ -37,7 +39,11 @@ export function validateTurn(body) {
   const locks = [...new Set(body.locks ?? [])];
   if (locks.length && !draft) throw new AppError('先建立画面，再锁定要素。');
   const scope = (Array.isArray(body.scope) ? body.scope : []).filter(k => FIELD_KEYS.includes(k));
-  return { message, history, draft, locks, scope, reference: validateImage(body.reference) };
+  const feedback = normalizeFeedback(body.feedback);
+  const resultReference = validateImage(body.resultReference);
+  if (feedback && !draft) throw new AppError('先建立一版提示词，再根据生成结果复盘。');
+  if (resultReference && !feedback) throw new AppError('请说明生成结果中需要改进的问题。');
+  return { message, history, draft, locks, scope, feedback, resultReference, brief: normalizeBrief(body.brief), reference: validateImage(body.reference) };
 }
 
 export const SYSTEM_PROMPT = `你是映词，一个帮助普通人完善生图提示词的中文创作助手。用户不懂术语，先理解日常表达，给出可修改的第一版，每轮最多问两个影响画面的关键问题，优先问一个；用户让你决定时直接做合理选择，并明确这是建议。避免夸赞和空泛的高级、杰作、8K等堆词。
@@ -47,22 +53,34 @@ export const SYSTEM_PROMPT = `你是映词，一个帮助普通人完善生图�
 {"reply":"自然、简短的中文回应，说明选择及必要问题","title":"简短画面名称","draft":{"fields":{"subject":{"zh":"主体描述","en":"subject"},"scene":{"zh":"场景","en":"scene"},"composition":{"zh":"构图","en":"composition"},"lighting":{"zh":"光线","en":"lighting"},"palette":{"zh":"配色","en":"palette"},"style":{"zh":"画风","en":"style"}},"avoid":{"zh":"避免内容或空字符串","en":"avoid or empty"},"aspectRatio":"auto"},"suggestions":["用户可以直接发送的下一步想法，最多3个"],"observations":[{"label":"光线","text":"可见观察或明确标注的推测","certainty":"seen或inferred"}]}。`;
 
 export function buildMessages(turn) {
-  const context = { currentDraft: turn.draft, lockedFields: turn.locks, referenceScope: turn.scope };
-  const content = [{ type: 'text', text: `${turn.message}\n\n以下是应用提供的当前画面状态：\n${JSON.stringify(context)}` }];
-  if (turn.reference) content.push({ type: 'image_url', image_url: { url: turn.reference.dataUrl } });
-  return [{ role: 'system', content: SYSTEM_PROMPT }, ...turn.history, { role: 'user', content }];
+  const context = { currentDraft: turn.draft, lockedFields: turn.locks, referenceScope: turn.scope, creativeBrief: turn.brief };
+  const content = [{ type: 'text', text: `${turn.message}\n\n${feedbackMessage(turn.feedback)}\n以下是应用提供的当前画面状态：\n${JSON.stringify(context)}` }];
+  if (turn.reference) content.push({ type: 'text', text: '下面是目标参考图：按 referenceScope 与 referenceMode 选取灵感。' }, { type: 'image_url', image_url: { url: turn.reference.dataUrl } });
+  if (turn.resultReference) content.push({ type: 'text', text: '下面是用户实际生成的结果图：用于检查反馈问题，不要把其中缺陷当作目标画风。' }, { type: 'image_url', image_url: { url: turn.resultReference.dataUrl } });
+  return [{ role: 'system', content: SYSTEM_PROMPT + COACHING_PROMPT }, ...turn.history, { role: 'user', content }];
 }
 
-export function parseOutput(value, draft, locks) {
+export const COACHING_PROMPT = `
+更具体的创作规则：
+1. 先理解用户要做什么、喜欢参考图的什么，以及这轮希望改变什么。creativeBrief.goal 是用户的长期目标，purpose 是用途：portrait 人物角色需明确姿态与画面范围，product 产品展示需明确材质和观看角度，wallpaper 壁纸封面需考虑比例与留白，illustration 插画故事需明确叙事动作。已有比例与锁定优先，不能擅自覆盖。
+2. referenceMode=inspiration 只借鉴选中的感觉；style 提取画风、颜色、光影，除非用户要求，不照搬人物身份、服装、物品；composition 主要借鉴位置、视角与空间；close 尽量接近可见内容但不保证复刻。referenceScope 进一步限制取材范围。没有图时不要描述不存在的参考图。
+3. editMode=refine 时精确局部修改。明确列出 editedFields 数组（subject,scene,composition,lighting,palette,style,avoid,aspectRatio 中实际需要更新的项）；未列出的项由程序保持原样。主体改变可联动调整包含旧主体词的构图，说明原因。用户仅改衣服时，不连带改光线或画风。editMode=redesign 时可重新组织未锁定部分，但 editedFields 仍应准确。lockedFields 永远保持。
+4. 把“更有质感、电影感、梦幻、自然”转成可执行的材质、光影、色彩或空间特征，避免只堆同义形容词。存在冲突时用简单中文问一个最关键的问题；普通缺失细节给一个建议并写入 assumptions，用户说你决定时直接给完整可用版本。别问已在上下文确定的问题。
+5. reply 简洁分段，解释本轮关键选择和一个下一步问题。额外返回 understanding（本轮理解，一句话）和 assumptions（最多4条，明确哪些是建议，不能把推测当事实）。suggestions 是三条可直接发送的不同方向，不重复用户刚完成的操作。
+6. 每个中英字段描述同一件事，避免跨字段重复、主语漂移、旧主体残留或互相矛盾。自然语言不包含 --ar、--no、模型版本、seed、权重等专属参数，程序负责导出适配。不能声称这份提示词已验证生成效果。
+在原 JSON 结构顶层补充 "editedFields":[],"understanding":"这轮需求理解","assumptions":[]，draft 仍为完整状态。`;
+
+export function parseOutput(value, draft, locks, brief = normalizeBrief()) {
   let raw;
   try { raw = JSON.parse(value.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '')); }
   catch { throw new AppError('模型返回的格式不完整，请重试，或换用支持结构化输出的视觉模型。', 502, 'MODEL_FORMAT'); }
-  try { return normalizeResult(raw, draft, locks); }
+  try { return focusedResult(normalizeResult(raw, draft, locks), raw, draft, brief); }
   catch (error) { throw new AppError(`模型结果无法使用：${error.message}`, 502, 'MODEL_FORMAT'); }
 }
 
 export async function askProvider(config, turn, { signal, fetchImpl = fetch } = {}) {
-  const body = { model: config.model, messages: buildMessages(turn), stream: false, max_tokens: 3500 };
+  const body = { model: config.model, messages: buildMessages(turn), stream: false, max_tokens: 5000 };
+  if (config.jsonMode) body.response_format = { type:'json_object' };
   let response;
   try {
     response = await fetchImpl(`${validateBaseUrl(config.baseUrl)}/chat/completions`, {
@@ -85,7 +103,7 @@ export async function askProvider(config, turn, { signal, fetchImpl = fetch } = 
   } catch { throw new AppError('模型服务没有返回可用的数据。', 502, 'MODEL_FORMAT'); }
   const text = payload.choices?.[0]?.message?.content;
   if (typeof text !== 'string' || !text.trim()) throw new AppError('模型没有返回文字内容，请检查是否使用了支持图片和文字输出的模型。', 502, 'MODEL_FORMAT');
-  const result = parseOutput(text, turn.draft, turn.locks);
+  const result = parseOutput(text, turn.draft, turn.locks, turn.brief);
   if (!turn.reference) result.observations = [];
   return result;
 }

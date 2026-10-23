@@ -11,7 +11,7 @@ import { FIELD_KEYS, composePrompt, normalizeResult } from '../public/shared.mjs
 import { DEMO_DRAFT, demoResult } from '../public/demo.mjs';
 import { ProjectStore, validateProject } from '../src/projects.mjs';
 
-const rawResult = () => ({ reply:'已把主体换成猫，其余沿用。',title:'窗边小猫',draft:structuredClone(DEMO_DRAFT),suggestions:['换成插画'],observations:[{label:'光线',text:'窗边柔光',certainty:'seen'}] });
+const rawResult = () => ({ reply:'已把主体换成猫，其余沿用。',title:'窗边小猫',draft:structuredClone(DEMO_DRAFT),editedFields:[...FIELD_KEYS,'avoid','aspectRatio'],suggestions:['换成插画'],observations:[{label:'光线',text:'窗边柔光',certainty:'seen'}] });
 const turnBody = () => ({ message:'主体改成一只猫',messages:[],draft:structuredClone(DEMO_DRAFT),locks:['lighting'],scope:['palette'],reference:null });
 const config = { baseUrl:'https://provider.example/v1',model:'vision-model',apiKey:'never-print-this-secret' };
 const projectBody = () => ({id:randomUUID(),title:'测试画面',mode:'demo',created:Date.now(),updated:Date.now(),reference:{name:'示例',assetPath:'/assets/cafe-reference.png'},scope:FIELD_KEYS,locks:['lighting'],messages:[{role:'user',text:'想画窗边',demo:true}],revisions:[{id:randomUUID(),created:Date.now(),draft:structuredClone(DEMO_DRAFT),changes:['第一版']}],observations:[]});
@@ -27,7 +27,8 @@ test('scripted example accepts only explicit choices, preserving locks', () => {
   assert.equal(demoResult('任意自由输入',DEMO_DRAFT,[]),null);
   const result = demoResult('换成窗边的小猫',DEMO_DRAFT,['subject']);
   assert.deepEqual(result.draft.fields.subject,DEMO_DRAFT.fields.subject);
-  assert.notDeepEqual(result.draft.fields.composition,DEMO_DRAFT.fields.composition);
+  assert.deepEqual(result.draft.fields.composition,DEMO_DRAFT.fields.composition);
+  assert.ok(!composePrompt(result.draft,'zh').includes('猫'));
 });
 test('malformed, missing and oversized fields are rejected', () => {
   assert.throws(() => normalizeResult({reply:'x',draft:{}}));
@@ -132,11 +133,22 @@ test('project data validates paths, revisions and image references before writin
   assert.throws(()=>validateProject({...p,revisions:[{...p.revisions[0],draft:{}}]},p.id));
   assert.throws(()=>validateProject({...p,messages:[{role:'system',text:'x'}]},p.id));
 });
-test('HTTP project round trip supports cross-browser local recovery and blocks cross-origin saves',async t=>{
+test('HTTP project round trip preserves studio metadata and imported copies without overwriting originals',async t=>{
   const {call}=await appFixture(t),p=projectBody();
+  p.customTitle=true;
+  p.brief={goal:'用雨窗的光做一张插画封面',purpose:'illustration',referenceMode:'style',target:'midjourney',editMode:'refine'};
+  p.messages.push({role:'assistant',text:'先保留窗边光线。',understanding:'提取画风',assumptions:['先建议竖版'],changeLabels:['更新画风']});
   assert.equal((await call(`/api/projects/${p.id}`,p,'PUT')).status,200);
   const loaded=await(await call(`/api/projects/${p.id}`,undefined,'GET')).json();assert.equal(loaded.title,p.title);
-  const list=await(await call('/api/projects',undefined,'GET')).json();assert.equal(list.length,1);
+  assert.deepEqual(loaded.brief,p.brief);assert.equal(loaded.customTitle,true);
+  assert.deepEqual(loaded.messages.at(-1).assumptions,['先建议竖版']);
+  const backup=JSON.parse(JSON.stringify({format:'yingci-project',version:1,project:loaded}));
+  const imported={...backup.project,id:randomUUID(),title:'导入副本'};
+  assert.equal((await call(`/api/projects/${imported.id}`,imported,'PUT')).status,200);
+  const copy=await(await call(`/api/projects/${imported.id}`,undefined,'GET')).json();
+  assert.deepEqual(copy.revisions,loaded.revisions);assert.deepEqual(copy.brief,p.brief);
+  assert.equal((await(await call(`/api/projects/${p.id}`,undefined,'GET')).json()).title,p.title);
+  const list=await(await call('/api/projects',undefined,'GET')).json();assert.equal(list.length,2);
   assert.equal((await call(`/api/projects/${p.id}`,p,'PUT',{Origin:'https://other.example'})).status,403);
   assert.equal((await call(`/api/projects/${p.id}`,undefined,'DELETE')).status,200);
   assert.equal((await call(`/api/projects/${p.id}`,undefined,'GET')).status,404);
